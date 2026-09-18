@@ -14,12 +14,12 @@
 * **Мінімізація витоку чутливих даних (Decoupled Configuration):** Усі параметри цільової хмари (Project ID, Region, Zone, WIF Providers) передаються виключно через змінні оточення воркспейсів HCP Terraform та Repository Variables у GitHub Actions. Конфігураційні файли репозиторію не містять жорстко зашитих реальних імен проєктів чи облікових даних.
 
 ### 1.2. Організаційна ієрархія та фабрика проєктів GCP
-* **Організація:** Ресурси розміщуються в межах виділеної організації **`oleksatori-org`** (ID: `455342405415`).
+* **Організація:** Ресурси розміщуються в межах виділеної організації **`<gcp>-org`** (ID: `455342405415`).
 * **Ізольовані проєкти за середовищами:**
-  * **Dev:** `playtests-beacon-dev` (Project #: `739483964968`) — пісочниця та середовище швидкої розробки з авто-розгортанням.
+  * **Dev:** `playtests-beacon-dev` — пісочниця та середовище швидкої розробки з авто-розгортанням.
   * **Stage:** `playtests-beacon-stage` — середовище передрелізного тестування з незмінними (immutable) OCI-тегами.
   * **Prod:** `playtests-beacon-prod` — продуктивне середовище із суворими approval-гейтами та захистом від видалення.
-* **Централізований білінг:** Усі проєкти автоматично підключаються до Cloud Billing Account (`01AEB6-EF391A-41CC3C`) із вимкненням дефолтних небезпечних мереж (`auto_create_subnetworks = false`).
+* **Централізований білінг:** Усі проєкти автоматично підключаються до Cloud Billing Account із вимкненням дефолтних небезпечних мереж (`auto_create_subnetworks = false`).
 
 ### 1.3. Високопродуктивний хмарний WebAssembly (Wasm-Spin) у Kubernetes
 * **Портативний запуск WASM (Fermyon Spin OCI):** Застосування платформи **Fermyon Spin** у складі керованого кластера **Google Kubernetes Engine (GKE)**. Пакування скомпільованого бінарника (`wasm32-wasip1` + `wasm-opt -Oz`) поверх легкого базового образу `ghcr.io/fermyon/spin:v2.7.0` забезпечує 100% сумісність зі стандартними GKE пулами нод (COS) без необхідності модифікації ядра вузлів чи складних custom containerd shims.
@@ -43,7 +43,7 @@
 | **Zero-Drift App CD** | Використання `lifecycle.ignore_changes` для поля `image` у специфікації Kubernetes Deployment у Terraform, що усуває конфлікти дрифту між інфраструктурним кодом та безперервним деплоєм додатків. |
 | **2-Dimensional Composite Tagging** | Стратегія тегування, що незалежно враховує версії клієнтського JS-трекера та бекенд-сервера (`:dev-b<beacon_sha>-t<tag_sha>` для Dev та `:v<beacon_ver>-tag.<tag_ver>` для релізів). |
 | **Zero Static Secrets** | Жодного JSON-ключа сервісного акаунта в репозиторіях чи секретах GitHub. Лише Workload Identity Federation (WIF) за протоколом OpenID Connect (OIDC). |
-| **Principle of Least Privilege** | Окремі цільові сервісні акаунти: `sa-terraform-executor` (IaC-виконавець), `sa-gha-deployer` (CI/CD релізи), `sa-beacon-runtime` (запуск подів), `sa-gke-nodes` (читання реєстру та логування). |
+| **Principle of Least Privilege** | Окремі цільові сервісні акаунти: `sa-terraform-executor` (IaC-виконавець), `sa-gha-deployer` (CI/CD релізи), `sa-beacon-runtime` (запуск подів та пуш у Pub/Sub), `sa-gke-nodes` (читання реєстру та логування). |
 | **Extreme FinOps** | Автоматична оптимізація розмірів (Spot VMs, e2-small, Free Tier Zonal кластери, мінімальні розміри сховищ). |
 | **Single Source of Truth** | Код репозиторіїв та документація в `docs` є єдиним актуальним джерелом знань про систему. |
 
@@ -104,7 +104,7 @@ flowchart LR
         WS_Prod["terraform-central-prod"]
     end
 
-    subgraph GCPSites["Проєкти GCP (Орг: oleksatori-org)"]
+    subgraph GCPSites["Проєкти GCP (Орг: <gcp>-org)"]
         Proj_Dev["playtests-beacon-dev"]
         Proj_Stage["playtests-beacon-stage"]
         Proj_Prod["playtests-beacon-prod"]
@@ -195,7 +195,7 @@ sequenceDiagram
 
 1. **Безпека облікових записів (Zero Credential Leakage):**
    * Жодного статичного ключа `credentials.json` у репозиторіях чи секретах GitHub.
-   * WIF-провайдер `projects/739483964968/locations/global/workloadIdentityPools/tfc-pool/providers/github-provider` обмежений суворим зіставленням суб'єкта: `assertion.repository_owner == 'wiliest0r'`.
+   * WIF-провайдери обмежені суворим зіставленням суб'єкта: `assertion.repository_owner == 'wiliest0r'`.
    * Права `sa-gha-deployer` строго обмежені: `roles/artifactregistry.writer` та `roles/container.developer`.
 2. **Нульовий простій (Zero-Downtime Rolling Update):**
    * Оновлення версії коду здійснюється стандартним механізмом Kubernetes RollingUpdate з перевіркою готовності подів (`readinessProbe` / `healthz`).
@@ -209,24 +209,138 @@ sequenceDiagram
 
 ## 6. Поточний статус та дорожня карта (Roadmap)
 
-### 6.1. Поточний статус реалізації (Milestone 1 — COMPLETED ✅)
-* [x] Організація GCP `oleksatori-org` та створення проєкту `playtests-beacon-dev`.
-* [x] Налаштування Workload Identity Federation (WIF) OIDC для HCP Terraform та GitHub Actions.
-* [x] Збірка Zonal GKE кластера `beacon-gke-dev` (`europe-west1-b`) на Spot VMs (`e2-small`).
-* [x] Google Artifact Registry `beacon-repo-dev` для збереження OCI WASM-образів.
-* [x] Впровадження VCS-інтеграції HCP Terraform: автоматичний план на PR, автоматичний Apply при мерджі в `develop`.
-* [x] Повна відмова від хардкоду конфігурації хмари (всі параметри задаються через змінні).
-* [x] Створення та тестування Dockerfile на базі Fermyon Spin (`ghcr.io/fermyon/spin:v2.7.0`).
-* [x] Реалізація композитного тегування (Стратегія 1) та крос-репозиторного тригера `web-tag` ➔ `beacon`.
-* [x] Автоматичний Rollout поду `beacon-server` у GKE з налаштованою стратегією `max_surge = 0`.
-* [x] Smoke-тестування живого публічного ендпоінту (`34.140.5.11`): перевірено працездатність `/healthz`, `/tag.js` та валідацію HMAC на `/v1/sync`.
+### 6.1. Статус реалізації етапів
+
+* [x] **Етап 1: Інфраструктурний фундамент та GitOps автоматизація (Milestone 1 — COMPLETED ✅)**
+  * Організація GCP, створення проєкту `playtests-beacon-dev`.
+  * Workload Identity Federation (WIF) OIDC для HCP Terraform та GitHub Actions.
+  * Zonal GKE кластер `beacon-gke-dev` (`europe-west1-b`) на Spot VMs (`e2-small`).
+  * Google Artifact Registry `beacon-repo-dev` для OCI WASM-образів.
+  * VCS-інтеграція HCP Terraform: авто-план на PR, авто-Apply при мерджі в `develop`.
+  * Dockerfile на базі Fermyon Spin (`ghcr.io/fermyon/spin:v2.7.0`).
+  * Композитне тегування (Стратегія 1) та крос-репозиторний тригер `web-tag` ➔ `beacon`.
+  * Автоматичний Rollout поду `beacon-server` у GKE зі стратегією `max_surge = 0`.
+  * Smoke-тестування ендпоінтів `/healthz`, `/tag.js` та валідація HMAC на `/v1/sync`.
+
+* [x] **Етап 2: Multi-Environment (Stage & Prod) & Promotion Governance (Milestone 2 — COMPLETED ✅)**
+  * Створення та конфігурація проєкту `playtests-beacon-stage`.
+  * Налаштування воркспейсу `terraform-central-stage` в HCP Terraform із підключенням до гілки `stage`.
+  * Реалізація пайплайну просування релізів: `develop` ➔ PR у `stage` із Speculative Plan та Review Gate.
+
+* [x] **Етап 3: Pipeline аналітики та стрімінгу подій (Milestone 3 — COMPLETED ✅)**
+  * Агностична архітектура зберігання та обробки телеметрії (Lakehouse Ready).
+  * Реалізація буферизації подій через sidecar-контейнер **Vector** (`timberio/vector:0.43.0-alpine`).
+  * Розділення потоків даних: чистий NDJSON потік подій у `stdout` (shared volume), ізольований від операційного логування.
+  * Шина повідомлень **Google Cloud Pub/Sub** (`beacon-events-<env>`) із гарантованою доставкою.
+  * **Dead-Letter Queue (DLQ)** топік та підписка (`beacon-events-dlq-<env>`) для ізоляції збійних або пошкоджених повідомлень (після 5 невдалих спроб доставки).
+  * Хмарне озеро даних (Lakehouse) у **Google Cloud Storage** з автоматичною партиційною структурою за часом (`events/year=YYYY/month=MM/day=DD/hour=HH/`).
+  * Готовність до безшовної аналітичної обробки через **BigQuery External Tables**, **Apache Spark** або **Databricks**.
+
+* [x] **Етап 4: Observability & Alerting (Milestone 4 — COMPLETED ✅)**
+  * Політики сповіщень **Google Cloud Monitoring Alert Policies**:
+    * Моніторинг черги недоставлених повідомлень DLQ (тригер при появі хоча б одного повідомлення в черзі довше 60 секунд).
+    * Моніторинг затримки доставки в Lakehouse (тригер при віці найстарішого непідтвердженого повідомлення > 300 с).
+    * Моніторинг стабільності подів GKE (тригер при рестартах контейнерів > 0 за 5 хвилин).
+  * Канал сповіщень про інциденти: Email Notification Channel (`alerts@playtests.io`).
+  * Спеціалізований Cloud Monitoring Dashboard: **Beacon Telemetry & Lakehouse Dashboard** (DLQ backlog, Lakehouse lag, темп інжекції подій, рестарти подів).
+  * Метрики на основі логів (Log-based Metrics): `beacon-ingested-events` та `beacon-quarantined-events`.
+  * Експортер Prometheus метрик у Vector на порті `9090` із нативним скрапінгом через **Google Cloud Managed Service for Prometheus (GMP)**.
+  * Структуроване JSON-логування операцій сервера в `stderr` із кореляцією спанів **Cloud Trace APM** (підтримка заголовків W3C `traceparent` та `x-cloud-trace-context`).
 
 ---
 
-### 6.2. Наступні етапи (Upcoming Milestones)
+## 7. Архітектура Pipeline стрімінгу та Lakehouse (Stage 3)
 
-| Етап | Завдання | Пріоритет |
-| :--- | :--- | :---: |
-| **Етап 2: Stage & Prod Environments** | Підготовка проєкту `playtests-beacon-stage`, воркспейсу `terraform-central-stage`, релізного просування через Git-теги з обов'язковими Review Gates. | P1 |
-| **Етап 3: Pipeline аналітики та стрімінгу подій** | Інтеграція `/v1/sync` із шиною повідомлень Google Cloud Pub/Sub або сховищем ClickHouse / BigQuery для персистентного збереження подій телеметрії. | P1 |
-| **Етап 4: Observability & Alerting** | Налаштування Google Cloud Monitoring, структурованого логування, Prometheus метрик Spin та каналу сповіщень про інциденти. | P2 |
+```mermaid
+flowchart LR
+    subgraph GKEPod["GKE Pod: beacon-server"]
+        WASM["beacon-server<br/>(Spin WASM)"]
+        SharedVol[("Shared Volume<br/>/var/log/beacon/events.log")]
+        Vector["vector<br/>(Sidecar)"]
+        DiskBuffer[("Vector Buffer<br/>/var/lib/vector")]
+    end
+
+    subgraph StreamingBus["Cloud Streaming Bus"]
+        PubSub["Google Cloud Pub/Sub<br/>topic: beacon-events"]
+        DLQ["Dead-Letter Queue<br/>topic: beacon-events-dlq"]
+        LakehouseSub["Pub/Sub GCS Push Subscription"]
+    end
+
+    subgraph LakehouseStorage["Analytical Lakehouse & Compute"]
+        GCS["Google Cloud Storage Bucket<br/>events/year=YYYY/month=MM/day=DD/hour=HH/"]
+        BigQuery["BigQuery External Table<br/>(SQL Engine)"]
+        Spark["Apache Spark / Databricks<br/>(Batch & ML Processing)"]
+    end
+
+    WASM -->|NDJSON write| SharedVol
+    SharedVol -->|File tailing| Vector
+    Vector -->|Disk-buffered delivery| DiskBuffer
+    DiskBuffer -->|GCP Pub/Sub Sink| PubSub
+    PubSub -->|Max 5 retries fail| DLQ
+    PubSub -->|Cloud Storage Subscription| LakehouseSub
+    LakehouseSub -->|Parquet/JSON write| GCS
+    GCS -.-> BigQuery
+    GCS -.-> Spark
+```
+
+### 7.1. Принципи агностичності та надійності
+* **Чітке розділення потоків (Stream Segregation):** Бекенд WASM спрямовує сирі валідовані події телеметрії виключно у `stdout` у форматі NDJSON. Vector відслідковує файл подій на спільному монтованому томі `emptyDir`.
+* **Zero Event Loss (On-Disk Buffering):** У разі тимчасової мережевої недоступності або проблем із Pub/Sub API, Vector автоматично буферизує події на локальний диск (`/var/lib/vector`, до 256 MB).
+* **Dead-Letter Queue (DLQ):** Повідомлення, які не вдалося обробити після 5 спроб доставки, автоматично скидаються у виділений топік `beacon-events-dlq` без блокування основного стріму.
+* **Lakehouse Storage Format:** Дані зберігаються у хмарному бакеті GCS у партиціонованому вигляді за шкалою часу (рік/місяць/день/година). Ця структура є відкритою та сумісною для читання будь-якими розподіленими рушіями обробки даних (BigQuery, Spark, Trino, Databricks).
+
+---
+
+## 8. Observability, Cloud Monitoring, APM & Alerting (Stage 4)
+
+```mermaid
+flowchart TD
+    subgraph Client["Web Client"]
+        Browser["Browser / Mobile App"]
+    end
+
+    subgraph BeaconPod["GKE Pod: beacon-server"]
+        SpinEngine["WASM Server (Spin)"]
+        VectorEngine["Vector Sidecar"]
+    end
+
+    subgraph ObservabilityStack["Google Cloud Observability Suite"]
+        CloudLogging["Cloud Logging<br/>(Structured JSON stderr)"]
+        CloudTrace["Cloud Trace APM<br/>(Distributed Spans)"]
+        CloudMonitoring["Cloud Monitoring<br/>(Dashboards & Alert Policies)"]
+        GMP["Managed Service for Prometheus<br/>(GMP Scraper)"]
+    end
+
+    subgraph AlertChannels["Incident Response"]
+        Email["Email Alerts<br/>(alerts@playtests.io)"]
+    end
+
+    Browser -->|HTTP + traceparent / x-cloud-trace-context| SpinEngine
+    SpinEngine -->|Structured Logs with traceId/spanId| CloudLogging
+    CloudLogging -->|Log Correlation| CloudTrace
+    SpinEngine -->|Log Metric Filter| CloudMonitoring
+    VectorEngine -->|Prometheus Metrics :9090/metrics| GMP
+    GMP --> CloudMonitoring
+    CloudMonitoring -->|DLQ backlog > 0 / Lag > 300s / Restarts > 0| Email
+```
+
+### 8.1. Структуроване логування та кореляція APM/Trace
+* **Розділення каналів:** Operational logs надсилаються у `stderr` у форматі JSON із метаданими:
+  * `severity`: рівень важливості логу (`INFO`, `WARNING`, `ERROR`).
+  * `component`: назва модуля (`beacon-server`).
+  * `action`: виконана дія (`serve_tag`, `event_ingested`, `bad_request`, `event_quarantined`).
+  * `logging.googleapis.com/trace`: ідентифікатор трейсу GCP, витягнутий із W3C `traceparent` або `x-cloud-trace-context`.
+  * `logging.googleapis.com/spanId`: ідентифікатор конкретного спану для повної кореляції у Cloud Trace.
+
+### 8.2. Метрики та наскрізний Prometheus скрапінг
+* **Vector Internal Prometheus Exporter:** Vector експортує внутрішні операційні метрики продуктивності пайплайну на порті `9090`:
+  * `vector_component_received_events_total`: темп прийому подій.
+  * `vector_component_sent_events_total`: темп відправки подій у Pub/Sub.
+  * `vector_buffer_sent_bytes_total`: обсяг переданих байтів.
+  * `vector_http_client_response_rtt_seconds`: латентність мережевих запитів.
+* **GMP Auto-Scraping:** Поди мають стандартні K8s анотації `prometheus.io/scrape = "true"`, `prometheus.io/port = "9090"`, `prometheus.io/path = "/metrics"`, що дозволяє агенту GMP автоматично збирати метрики без додаткових сторонніх агентів.
+
+### 8.3. Політики сповіщень та Dashboard
+* **DLQ Backlog Alert Policy:** Негайне сповіщення команди інженерів, якщо кількість непідтверджених повідомлень у DLQ-підписці перевищує 0 протягом 60 секунд.
+* **Lakehouse Lag Alert Policy:** Сповіщення при накопиченні затримки (вік найстарішого непідтвердженого повідомлення > 300 секунд), що запобігає затримкам в аналітичних вітринах.
+* **Pod Restarts Alert Policy:** Сповіщення у разі будь-якого аварійного перезапуску контейнерів у неймспейсі `beacon` за останні 5 хвилин.
