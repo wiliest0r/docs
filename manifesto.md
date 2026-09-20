@@ -417,3 +417,53 @@ flowchart TD
 * **Аналітичні вітрини (SQL Views):**
   * _daily_active_users: розрахунок DAU, унікальних сесій, подій та конверсій у розрізі акаунтів.
   * _adtech_performance: оцінка ефективності рекламних кампаній за джерелами, gclid, bclid та кількістю конверсій.
+
+---
+
+## 10. Динамічне масштабування та FinOps-оптимізація (1 до 1000+ RPS)
+
+`mermaid
+flowchart TD
+    subgraph TrafficFlow ["Динамічний трафік"]
+        RPS_Low["1 - 50 RPS<br/>(Звичайне навантаження)"]
+        RPS_Burst["1000+ RPS<br/>(Маркетинговий пік / Розсилка)"]
+    end
+
+    subgraph GKE_Autoscaling ["Автоскейлінг рівня обчислень (GKE Dev/Stage/Prod)"]
+        HPA["Horizontal Pod Autoscaler (HPA v2)<br/>- Target CPU: 70%<br/>- Target Memory: 80%<br/>- Min Pods: 1 | Max Pods: 5<br/>- Fast Scale-Up: +100% / 15s<br/>- Stabilized Scale-Down: 300s window"]
+        Pods["beacon-server Pods<br/>(Spin WASM + Vector Sidecar)"]
+        CA["GKE Cluster Autoscaler<br/>- 1 до 3 Spot Nodes (e2-small/medium)<br/>- ~-/міс при низькому навантаженні"]
+        HPA -->|Керує репліками| Pods
+        Pods -->|Вимагає ресурси| CA
+    end
+
+    subgraph DataPlane_Elasticity ["Еластична шина та сховище даних"]
+        VectorBuffer["Vector On-Disk Buffer<br/>(Захист від сплесків 512MB)"]
+        PubSubTopic["Google Cloud Pub/Sub<br/>(Автоматичне шардування за ordering_key)"]
+        BQWrite["BigQuery Storage Write API<br/>(До 2 TB/міс у Free Tier)"]
+        GCSLake["GCS Lakehouse Bucket<br/>(Nearline/Coldline Lifecycle)"]
+    end
+
+    RPS_Low --> Pods
+    RPS_Burst --> Pods
+    Pods --> VectorBuffer --> PubSubTopic
+    PubSubTopic --> BQWrite
+    PubSubTopic --> GCSLake
+`
+
+### 10.1. Стратегія автоскейлінгу Pods (HPA v2)
+* **Метрики тригерів:** 70% CPU та 80% пам'яті (від equests: cpu=50m, memory=64Mi).
+* **Агресивний Scale-Up (Fast Burst Handling):**
+  * Політика: миттєве збільшення на **+100%** або **+2 поди** кожні 15 секунд без стабілізаційного вікна (stabilization_window_seconds = 0). Це дозволяє поглинати раптові маркетингові сплески без черг і відмов.
+* **Плавний Scale-Down (Anti-Flapping):**
+  * Політика: стабілізаційне вікно **300 секунд (5 хвилин)**, максимальне скорочення не більше ніж на 50% кожні 60 секунд. Це запобігає «тремтінню» реплік і частим перезапускам у періоди пульсуючого трафіку.
+* **GitOps Idempotency:** Блок lifecycle.ignore_changes = [spec[0].replicas] у kubernetes_deployment_v1.beacon_server виключає конфлікти між автоскейлером HPA та лінійним застосуванням коду Terraform.
+
+### 10.2. Еластичність пулу нод (GKE Cluster Autoscaler)
+* Пул преривних нод (**Spot VMs**) автоматично розширюється від **1 до 3 нод** за потреби.
+* При 1 RPS працює лише 1 нода e2-small (/міс).
+* При 1000+ RPS кластер підіймає 2 додаткові ноди лише на час сплеску (вартість додаткової ноди на 4 години — менше ніж .05).
+
+### 10.3. Динаміка вартості та FinOps-висновки
+* **Обчислення (WASM на GKE Spot):** Завдяки ультралегкому WASM-рантайму (час відповіді 0.5–2 мс, споживання пам'яті 50 MB), один под обробляє 200–350 RPS. 5 подів повністю покривають 1000+ RPS із мінімальними витратами (~–/міс).
+* **Сховище та шина:** При переході до 1000+ RPS основними драйверами вартості стають Pub/Sub та BigQuery Storage Write API, для чого реалізовано паралельне збереження сирого стріму в GCS Lakehouse з політикою архівації Nearline/Coldline.
