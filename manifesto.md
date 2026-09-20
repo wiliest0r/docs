@@ -1,4 +1,4 @@
-# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
+﻿# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
 
 > **Статус:** Офіційний архітектурний маніфест (Active / Living Document)  
 > **Призначення:** Єдине джерело істини (Single Source of Truth, SSOT) щодо цільової архітектури, принципів безпеки, інфраструктурного управління, дорожньої карти та стандартів експлуатації платформи аналітики **Beacon Analytics**.
@@ -367,7 +367,7 @@ flowchart TD
     end
 
     subgraph EdgeIngestion ["2. Edge & Ingestion Engine (GKE Spin WASM + Vector)"]
-        WASM["Rust WASM (beacon-server)<br/>- Headers: X-Account-ID (fallback X-Tenant-ID)<br/>- AccountConfigProvider resolution<br/>- Flags: has_ad_attribution, is_conversion<br/>- Universal CRM event contract dispatch"]
+        WASM["Rust WASM (beacon-server)<br/>- Headers: X-Tag-ID (fallback X-Measurement-ID)<br/>- AccountConfigProvider resolution<br/>- Flags: has_ad_attribution, is_conversion<br/>- Universal CRM event contract dispatch"]
         Vector["Vector Sidecar<br/>- ordering_key = account_id"]
         TagJS -->|POST /v1/sync| WASM
         WASM -->|Shared Volume NDJSON| Vector
@@ -399,7 +399,7 @@ flowchart TD
 ### 9.1. Провайдер акаунтів (AccountConfigProvider Trait)
 * **Абстракція:** Трейт AccountConfigProvider забезпечує отримання профілю клієнта (AccountProfile), перевірку статусу (Active, Suspended), налаштувань безпеки (AccountSecurityConfig) та конфігурації CRM (AccountCrmConfig).
 * **Імплементація:** InMemoryAccountStore для локального/девелоперського середовища з можливістю підключення Spin KV або розподіленої бази даних у продакшені.
-* **Наскрізна ідентифікація:** Заголовок X-Account-ID (із 100% збереженням сумісності для X-Tenant-ID) передається від GTM через клієнтський тег у WASM-рушій, призначається як Pub/Sub ordering_key і зберігається в колонці ccount_id BigQuery.
+* **Наскрізна ідентифікація:** Заголовок X-Tag-ID (або X-Measurement-ID) передається від GTM через клієнтський тег у WASM-рушій, призначається як Pub/Sub ordering_key і зберігається в колонці ccount_id BigQuery.
 
 ### 9.2. CRM-агностичний контракт (UniversalCrmEvent)
 * При фіксації конверсії (is_conversion = true) або передачі crm_lead_id рушій формує стандартизований контракт UniversalCrmEvent:

@@ -1,4 +1,4 @@
-# How to Build a High-Performance Backend for a Google Tag Manager (GTM) Community Template using Rust WASM
+﻿# How to Build a High-Performance Backend for a Google Tag Manager (GTM) Community Template using Rust WASM
 
 *By the Engineering Team at PlayTests*
 
@@ -254,7 +254,6 @@ pub fn handle_collect_event(req: &Request, store: &dyn AccountConfigProvider) ->
     let account_id = req
         .header("x-tag-id")
         .or_else(|| req.header("x-measurement-id"))
-        .or_else(|| req.header("x-account-id"))
         .and_then(|h| h.as_str().map(String::from))
         .or_else(|| payload.tag_id.clone())
         .or_else(|| payload.measurement_id.clone())
