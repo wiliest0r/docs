@@ -1,4 +1,4 @@
-﻿# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
+# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
 
 > **Статус:** Офіційний архітектурний маніфест (Active / Living Document)  
 > **Призначення:** Єдине джерело істини (Single Source of Truth, SSOT) щодо цільової архітектури, принципів безпеки, інфраструктурного управління, дорожньої карти та стандартів експлуатації платформи аналітики **Beacon Analytics**.
@@ -362,7 +362,7 @@ flowchart TD
 flowchart TD
     subgraph ClientSide ["1. Клієнтський рівень (GTM Community Tag / Web Tag)"]
         GTM["GTM Community Tag<br/>(Account ID: aid='acc_...')"]
-        TagJS["tag.js Runtime<br/>- window.__BEACON_CONFIG__ (accountId, token)<br/>- Visitor & Session ID (First-Party Cookies)<br/>- AdTech Click IDs (gclid, fbclid, msclkid)<br/>- Privacy Identity (hashed_email, crm_lead_id)"]
+        TagJS["tag.js Runtime<br/>- window.__BEACON_CONFIG__ (accountId, token)<br/>- Device & Session ID (First-Party Cookies & fp.js)<br/>- AdTech Click IDs (gclid, fbclid, msclkid)<br/>- Privacy Identity (hashed_email, crm_lead_id)"]
         GTM --> TagJS
     end
 
@@ -467,3 +467,43 @@ flowchart TD
 ### 10.3. Динаміка вартості та FinOps-висновки
 * **Обчислення (WASM на GKE Spot):** Завдяки ультралегкому WASM-рантайму (час відповіді 0.5–2 мс, споживання пам'яті 50 MB), один под обробляє 200–350 RPS. 5 подів повністю покривають 1000+ RPS із мінімальними витратами (~–/міс).
 * **Сховище та шина:** При переході до 1000+ RPS основними драйверами вартості стають Pub/Sub та BigQuery Storage Write API, для чого реалізовано паралельне збереження сирого стріму в GCS Lakehouse з політикою архівації Nearline/Coldline.
+
+---
+
+## 11. Ідентифікація пристроїв та апаратний відбиток (Device Identity & fp.js)
+
+```mermaid
+flowchart TD
+    subgraph ClientDevice ["Клієнтський браузер / Пристрій"]
+        Storage["Сховище: _op_device_id<br/>(localStorage + in-memory fallback)"]
+        FPModule["Модуль fp.js<br/>- Tier 1: Fast Core 64-bit Hash (Canvas 2D + Screen + Hardware)<br/>- Tier 2: Extended Async (WebGL GPU Vendor/Renderer)<br/>- Bot Flag: navigator.webdriver"]
+    end
+
+    subgraph PayloadCreation ["Формування події (web-tag)"]
+        EventPayload["Payload події:<br/>- device_id: d8e3b4a2-...<br/>- device_fp: a9f4c3b218e76543<br/>- context.device (signals)"]
+    end
+
+    subgraph BackendResolution ["Edge Ingestion (beacon) & BigQuery Marts"]
+        Ingestion["beacon-server (Rust WASM)<br/>Resolves device_id & device_fp"]
+        Marts["BigQuery SQL Views:<br/>- active_devices<br/>- unique_devices<br/>- Cross-Session Fallback: COALESCE(device_id, visitor_id)"]
+    end
+
+    Storage --> EventPayload
+    FPModule --> EventPayload
+    EventPayload --> Ingestion --> Marts
+```
+
+### 11.1. Стандартизація сутності `device` (AdTech / MMP)
+* Проєкт повністю перейшов від застарілого терміна `visitor` / `visitor_id` до галузевого стандарту **`device` / `device_id`** (відповідно до стандартів AppsFlyer, Adjust, Branch).
+* Для збереження сумісності бекенд та аналітичні вітрини підтримують безшовний фолбек `COALESCE(device_id, visitor_id)`.
+
+### 11.2. Архітектура відбитка `fp.js` (Гібридний Fingerprinting)
+* **Tier 1 (Fast Core Sync):** Збирає незмінні апаратні характеристики пристрою:
+  * **Canvas 2D Geometry & Fonts:** Субпіксельне згладжування, криві Безьє та змішування кольорів.
+  * **Фізичний дисплей:** Роздільна здатність, глибина кольору та `devicePixelRatio`.
+  * **Апаратне забезпечення:** Кількість ядер CPU (`hardwareConcurrency`), пам'ять (`deviceMemory`) та мультитач (`maxTouchPoints`).
+  * **Час та мова:** Таймзона, зміщення UTC та мовні пакети.
+  * **Хешування:** 64-бітний алгоритм FNV-1a (16-символьний шістнадцятковий хеш) без зовнішніх важких залежностей.
+* **Tier 2 (Extended Async):** У неблокуючому фоновому режимі (`requestIdleCallback`) аналізує WebGL GPU Unmasked Vendor/Renderer.
+* **Захист від ботів:** Прапорець `webdriver` фіксує автоматизовані headless-середовища (Selenium, Puppeteer, Playwright).
+* **Бюджет розміру:** Завдяки оптимізації вага повного бандла з модулем `fp.js` становить лише **3.75 KB gzip** (при встановленому ліміті до 5.0 KB).
