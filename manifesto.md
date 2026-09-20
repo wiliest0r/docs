@@ -1,4 +1,4 @@
-# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
+﻿# МАНІФЕСТ: Beacon Analytics — Архітектура Хмарної Інфраструктури (GCP, HCP Terraform & Wasm-Spin GKE)
 
 > **Статус:** Офіційний архітектурний маніфест (Active / Living Document)  
 > **Призначення:** Єдине джерело істини (Single Source of Truth, SSOT) щодо цільової архітектури, принципів безпеки, інфраструктурного управління, дорожньої карти та стандартів експлуатації платформи аналітики **Beacon Analytics**.
@@ -246,6 +246,14 @@ sequenceDiagram
   * Метрики на основі логів (Log-based Metrics): `beacon-ingested-events` та `beacon-quarantined-events`.
   * Експортер Prometheus метрик у Vector на порті `9090` із нативним скрапінгом через **Google Cloud Managed Service for Prometheus (GMP)**.
   * Структуроване JSON-логування операцій сервера в `stderr` із кореляцією спанів **Cloud Trace APM** (підтримка заголовків W3C `traceparent` та `x-cloud-trace-context`).
+* [x] **Етап 5: BigQuery Analytics Engine & Multi-Tenant Pipeline з AdTech/CRM лінкінгом (Milestone 5 — COMPLETED ✅)**
+  * Повна наскрізна пропагація мультитенантного ідентифікатора ccount_id (з підтримкою 	enant_id для зворотної сумісності).
+  * Трейт AccountConfigProvider та імплементація InMemoryAccountStore для валідації статусів, доменів і HMAC-токенів акаунтів.
+  * Універсальний контракт синхронізації конверсій з CRM (UniversalCrmEvent) для інтеграції з Salesforce, HubSpot, Pipedrive або вебхуками.
+  * BigQuery Dataset eacon_analytics_<env>, таблиця events_raw (DAY partitioned, clustered [account_id, event_name, session_id]).
+  * BigLake зовнішня таблиця events_lakehouse над відкритим партиціонованим сховищем GCS.
+  * Аналітичні SQL-вітрини _daily_active_users (DAU, сесії, події, конверсії) та _adtech_performance (атрибуція AdTech: gclid, fbclid, utm).
+  * Нативна стрімінгова доставка подій із Pub/Sub безпосередньо в BigQuery із фільтрацією та буферизацією через Vector.
 
 ---
 
@@ -344,3 +352,68 @@ flowchart TD
 * **DLQ Backlog Alert Policy:** Негайне сповіщення команди інженерів, якщо кількість непідтверджених повідомлень у DLQ-підписці перевищує 0 протягом 60 секунд.
 * **Lakehouse Lag Alert Policy:** Сповіщення при накопиченні затримки (вік найстарішого непідтвердженого повідомлення > 300 секунд), що запобігає затримкам в аналітичних вітринах.
 * **Pod Restarts Alert Policy:** Сповіщення у разі будь-якого аварійного перезапуску контейнерів у неймспейсі `beacon` за останні 5 хвилин.
+
+
+---
+
+## 9. Мультитенантна архітектура, провайдер акаунтів та аналітика BigQuery (Stage 5)
+
+`mermaid
+flowchart TD
+    subgraph ClientSide ["1. Клієнтський рівень (GTM Community Tag / Web Tag)"]
+        GTM["GTM Community Tag<br/>(Account ID: aid='acc_...')"]
+        TagJS["tag.js Runtime<br/>- window.__BEACON_CONFIG__ (accountId, token)<br/>- Visitor & Session ID (First-Party Cookies)<br/>- AdTech Click IDs (gclid, fbclid, msclkid)<br/>- Privacy Identity (hashed_email, crm_lead_id)"]
+        GTM --> TagJS
+    end
+
+    subgraph EdgeIngestion ["2. Edge & Ingestion Engine (GKE Spin WASM + Vector)"]
+        WASM["Rust WASM (beacon-server)<br/>- Headers: X-Account-ID (fallback X-Tenant-ID)<br/>- AccountConfigProvider resolution<br/>- Flags: has_ad_attribution, is_conversion<br/>- Universal CRM event contract dispatch"]
+        Vector["Vector Sidecar<br/>- ordering_key = account_id"]
+        TagJS -->|POST /v1/sync| WASM
+        WASM -->|Shared Volume NDJSON| Vector
+    end
+
+    subgraph StreamingBus ["3. Cloud Message Bus (Google Cloud Pub/Sub)"]
+        PubSub["Pub/Sub Topic: beacon-events<br/>Ordering Key: account_id (Logical Sharding)"]
+        Vector -->|gcp_pubsub sink| PubSub
+    end
+
+    subgraph StorageLayer ["4. Аналітичне сховище (BigQuery Lakehouse & GCS)"]
+        BQSub["Pub/Sub to BigQuery Subscription<br/>Direct Streaming Ingestion"]
+        BQTable["BigQuery: events_raw<br/>- Partition: DAY(server_timestamp)<br/>- Cluster: [account_id, event_name, session_id]"]
+        GCS["GCS Lakehouse Bucket<br/>events/year=YYYY/..."]
+        PubSub --> BQSub --> BQTable
+        PubSub --> GCS
+    end
+
+    subgraph ExternalLinkage ["5. Зовнішній лінкінг (AdTech & CRM)"]
+        Views["Analytical Views:<br/>- v_daily_active_users<br/>- v_adtech_performance"]
+        BQTable --> Views
+        AdTech["AdTech Attribution:<br/>Google Ads Enhanced Conversions / Meta CAPI"]
+        CRM["CRM Sync (Salesforce / HubSpot / Custom Webhook):<br/>UniversalCrmEvent Contract"]
+        Views -.-> AdTech
+        Views -.-> CRM
+    end
+`
+
+### 9.1. Провайдер акаунтів (AccountConfigProvider Trait)
+* **Абстракція:** Трейт AccountConfigProvider забезпечує отримання профілю клієнта (AccountProfile), перевірку статусу (Active, Suspended), налаштувань безпеки (AccountSecurityConfig) та конфігурації CRM (AccountCrmConfig).
+* **Імплементація:** InMemoryAccountStore для локального/девелоперського середовища з можливістю підключення Spin KV або розподіленої бази даних у продакшені.
+* **Наскрізна ідентифікація:** Заголовок X-Account-ID (із 100% збереженням сумісності для X-Tenant-ID) передається від GTM через клієнтський тег у WASM-рушій, призначається як Pub/Sub ordering_key і зберігається в колонці ccount_id BigQuery.
+
+### 9.2. CRM-агностичний контракт (UniversalCrmEvent)
+* При фіксації конверсії (is_conversion = true) або передачі crm_lead_id рушій формує стандартизований контракт UniversalCrmEvent:
+  * Ідентифікатори: ccount_id, isitor_id, session_id, hashed_email, hashed_phone, crm_lead_id.
+  * Атрибуція: gclid, bclid, utm_source, utm_medium, utm_campaign.
+  * Фінансові метрики: conversion_value, currency.
+* Дозволяє безпечно синхронізувати ліди та угоди з будь-якою CRM (Salesforce, HubSpot, Pipedrive або Webhook) без прив'язки до вендора.
+
+### 9.3. BigQuery Analytics Engine
+* **Схема:** Таблиця events_raw містить 44 нормалізовані колонки із підтримкою Pub/Sub метаданих.
+* **Оптимізація витрат та продуктивності (FinOps):**
+  * Денне партиціонування: DAY(server_timestamp).
+  * Мультитенантна кластеризація: [account_id, event_name, session_id].
+  * Автоматичний TTL датасету в dev: 14 днів.
+* **Аналітичні вітрини (SQL Views):**
+  * _daily_active_users: розрахунок DAU, унікальних сесій, подій та конверсій у розрізі акаунтів.
+  * _adtech_performance: оцінка ефективності рекламних кампаній за джерелами, gclid, bclid та кількістю конверсій.
